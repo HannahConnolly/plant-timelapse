@@ -1,0 +1,14 @@
+# Discord Bot / Webhook API
+discord.py>=2.0.0
+requests>=2.28.0
+
+# Hardware & Sensors
+adafruit-circuitpython-dht>=3.7.0
+RPi.GPIO>=0.7.0
+
+# Webcam Capture & Image Processing
+opencv-python>=4.7.0.0
+Pillow>=9.0.0
+
+# Environment Management
+python-dotenv>=1.0.0
