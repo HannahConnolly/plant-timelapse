@@ -38,3 +38,6 @@ plant-timelapse/
     └── services/
         ├── __init__.py
         └── discord_bot.py # Discord webhook/bot dispatch logic
+
+        ---
+
