@@ -38,6 +38,44 @@ plant-timelapse/
     └── services/
         ├── __init__.py
         └── discord_bot.py # Discord webhook/bot dispatch logic
+```
 
-        ---
+## DB design
 
+```
+       +-------------------------------------------------------+
+       |                   readings (Table)                    |
+       +-------------------------------------------------------+
+       | PK  | id             | INTEGER (AUTOINCREMENT)        |
+       |     | timestamp      | DATETIME (DEFAULT CURRENT_TIME)|
+       |     | temperature_c  | REAL                           |
+       |     | temperature_f  | REAL                           |
+       |     | humidity       | REAL                           |
+       |     | vpd_kpa        | REAL                           |
+       +-------------------------------------------------------+
+                                   |
+                                   | DATE(r.timestamp) 
+                                   |   = DATE(p.timestamp)  [LEFT JOIN]
+                                   v
+       +-------------------------------------------------------+
+       |               daily_timelapse_summary (VIEW)          |
+       +-------------------------------------------------------+
+       |     | log_date       | DATE (Group Key)               |
+       |     | avg_temp_c     | REAL (Computed AVG)            |
+       |     | avg_temp_f     | REAL (Computed AVG)            |
+       |     | avg_humidity   | REAL (Computed AVG)            |
+       |     | avg_vpd_kpa    | REAL (Computed AVG)            |
+       |     | photo_path     | TEXT                           |
+       +-------------------------------------------------------+
+                                   ^
+                                   | DATE(p.timestamp) 
+                                   |   = DATE(r.timestamp)  [LEFT JOIN]
+                                   |
+       +-------------------------------------------------------+
+       |                    photos (Table)                     |
+       +-------------------------------------------------------+
+       | PK  | id             | INTEGER (AUTOINCREMENT)        |
+       |     | timestamp      | DATETIME (DEFAULT CURRENT_TIME)|
+       |     | file_path      | TEXT                           |
+       +-------------------------------------------------------+
+```

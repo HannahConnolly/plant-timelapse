@@ -9,9 +9,6 @@ __pycache__/
 # Virtual Environments
 venv/
 env/
-ENV/
-env.bak/
-venv.bak/
 
 # Environment variables & secrets
 .env
@@ -34,3 +31,16 @@ cron.log
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Database files
+data/
+
+# Build artifacts
+dist/
+build/
+
+# Temporary files
+*.tmp
+
+# Backup files
+*~
