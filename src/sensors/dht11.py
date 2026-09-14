@@ -6,7 +6,7 @@ import math
 
 # Map GPIO pin configuration (e.g., GPIO 4 corresponds to board.D4)
 PIN_MAPPING = {
-    4: board.D4,
+    4: getattr(board, "D4"),
 }
 
 class DHT11Sensor:

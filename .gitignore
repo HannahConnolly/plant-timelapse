@@ -44,3 +44,6 @@ build/
 
 # Backup files
 *~
+
+# Continue
+.continue/rules.md
