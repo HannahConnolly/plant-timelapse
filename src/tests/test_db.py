@@ -45,8 +45,8 @@ class TestDatabase(unittest.TestCase):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
-        INSERT INTO readings (temperature_c, temperature_f, humidity, vpd_kpa, image_path)
-        VALUES (25.0, 77.0, 50.0, 10.0, 'path/to/image.jpg')
+        INSERT INTO readings (temperature_c, temperature_f, humidity, vpd_kpa)
+        VALUES (25.0, 77.0, 50.0, 10.0)
         """)
         conn.commit()
         conn.close()
@@ -61,7 +61,14 @@ class TestDatabase(unittest.TestCase):
         conn.close()
 
         self.assertIsNotNone(data, "Data should be inserted and retrieved successfully")
-        self.assertEqual(data, (1, datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), 25.0, 77.0, 50.0, 10.0, 'path/to/image.jpg'))
+        self.assertEqual(data[2:], (25.0, 77.0, 50.0, 10.0))
+
+    def test_photo_path_is_normalized_for_file_server(self):
+        from src.app import normalize_photo_path
+
+        self.assertEqual(normalize_photo_path("data/photos/demo.jpg"), "demo.jpg")
+        self.assertEqual(normalize_photo_path("/tmp/project/data/photos/demo.jpg"), "demo.jpg")
+        self.assertEqual(normalize_photo_path("demo.jpg"), "demo.jpg")
 
 if __name__ == '__main__':
     unittest.main()

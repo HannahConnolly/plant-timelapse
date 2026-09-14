@@ -5,10 +5,16 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
-from database.db import DatabaseManager
-from sensors.dht11 import DHT11Sensor
-from sensors.camera import capture_photo_and_save
-from services.discord_bot import send_discord_photo_report, send_discord_hourly_report
+try:
+    from .database.db import DatabaseManager
+    from .sensors.dht11 import DHT11Sensor
+    from .sensors.camera import capture_photo_and_save
+    from .services.discord_bot import send_discord_photo_report, send_discord_hourly_report
+except ImportError:
+    from database.db import DatabaseManager
+    from sensors.dht11 import DHT11Sensor
+    from sensors.camera import capture_photo_and_save
+    from services.discord_bot import send_discord_photo_report, send_discord_hourly_report
 
 # Dynamic resolution for project directory & environment loading
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

@@ -105,7 +105,19 @@ class DatabaseManager:
 
     def get_recent_readings(self, limit: int = 24) -> List[Dict[str, Any]]:
         """Fetches the most recent sensor logs."""
-        query = "SELECT * FROM readings ORDER BY timestamp DESC LIMIT ?"
+        query = """
+        SELECT
+            readings.*,
+            (
+                SELECT file_path
+                FROM photos
+                ORDER BY timestamp DESC, id DESC
+                LIMIT 1
+            ) AS file_path
+        FROM readings
+        ORDER BY timestamp DESC, id DESC
+        LIMIT ?
+        """
         try:
             with self.get_connection() as conn:
                 cursor = conn.execute(query, (limit,))

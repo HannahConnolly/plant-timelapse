@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Plant Monitor Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #121212;
+            color: #fff;
+            text-align: center;
+        }
+
+        .grid {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .card {
+            background: #1e1e1e;
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        img {
+            max-width: 500px;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🌱 Plant Climate & Camera Feed 🌱</h1>
+    <div class="grid">
+        <div class="card">
+            <h2>Current Feed</h2>
+            <img src="{{ url_for('serve_photo', filename=data.file_path) }}" alt="Latest Webcam Feed">
+        </div>
+        <div class="card">
+            <h2>Latest Reading</h2>
+            <p>Temperature: <strong>{{ data.temperature_f }}°F</strong></p>
+            <p>Humidity: <strong>{{ data.humidity }}%</strong></p>
+            <p>VPD: <strong>{{ data.vpd_kpa }} kPa</strong></p>
+        </div>
+    </div>
+</body>
+
+</html>
