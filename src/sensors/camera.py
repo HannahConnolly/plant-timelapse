@@ -1,6 +1,8 @@
 import os
 import time
+
 import cv2
+
 
 def capture_photo_and_save() -> str:
     os.makedirs("data/photos", exist_ok=True)
@@ -22,6 +24,7 @@ def capture_photo_and_save() -> str:
         return image_path
     finally:
         camera.release()
+
 
 # Test the method
 if __name__ == "__main__":

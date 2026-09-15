@@ -1,13 +1,14 @@
-import sqlite3
-from typing import List, Dict, Any, Optional
 import logging
+import sqlite3
+from typing import Any
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 handler.setFormatter(formatter)
 logger.addHandler(handler)
+
 
 class DatabaseManager:
     def __init__(self, db_path: str = "data/plant_monitor.db"):
@@ -32,7 +33,7 @@ class DatabaseManager:
             vpd_kpa REAL
         );
         """
-        
+
         photos_table = """
         CREATE TABLE IF NOT EXISTS photos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,11 +71,11 @@ class DatabaseManager:
 
     def insert_reading(
         self,
-        temp_c: Optional[float],
-        temp_f: Optional[float],
-        humidity: Optional[float],
-        vpd_kpa: Optional[float],
-    ) -> Optional[int]:
+        temp_c: float | None,
+        temp_f: float | None,
+        humidity: float | None,
+        vpd_kpa: float | None,
+    ) -> int | None:
         """Inserts a new sensor reading into the database."""
         query = """
         INSERT INTO readings (temperature_c, temperature_f, humidity, vpd_kpa)
@@ -90,7 +91,7 @@ class DatabaseManager:
             logger.error(f"Failed to insert reading into database: {e}")
             return None
 
-    def insert_photo(self, file_path: str) -> Optional[int]:
+    def insert_photo(self, file_path: str) -> int | None:
         """Inserts a daily photo file path with timestamp."""
         query = "INSERT INTO photos (file_path) VALUES (?)"
         try:
@@ -103,7 +104,7 @@ class DatabaseManager:
             logger.error(f"Failed to insert photo path into database: {e}")
             return None
 
-    def get_recent_readings(self, limit: int = 24) -> List[Dict[str, Any]]:
+    def get_recent_readings(self, limit: int = 24) -> list[dict[str, Any]]:
         """Fetches the most recent sensor logs."""
         query = """
         SELECT
@@ -126,7 +127,7 @@ class DatabaseManager:
             logger.error(f"Failed to fetch recent readings: {e}")
             return []
 
-    def get_daily_timelapse_summary(self, limit: int = 30) -> List[Dict[str, Any]]:
+    def get_daily_timelapse_summary(self, limit: int = 30) -> list[dict[str, Any]]:
         """Fetches calculated daily averages alongside matching photo paths via the VIEW."""
         query = "SELECT * FROM daily_timelapse_summary ORDER BY log_date DESC LIMIT ?"
         try:
