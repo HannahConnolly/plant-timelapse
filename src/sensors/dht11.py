@@ -100,6 +100,9 @@ class DHT11Sensor:
 
     def exit(self):
         """Releases the hardware sensor reference clean-up."""
+        if self._dht_device is None:
+            return
+
         try:
             self._dht_device.exit()
         except Exception as e:
