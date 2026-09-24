@@ -14,6 +14,7 @@ A Raspberry Pi plant-monitoring system. It reads a DHT11 temperature/humidity se
   - Daily: the photo plus the day's average climate.
   - Daily: a Gemini 2.5 Flash assessment covering visual health, climate analysis and recommendations.
   - Weekly: a looping growth GIF built from every daily photo, with each frame labelled by date.
+- **S3 backup** (optional): Each daily photo and weekly GIF is copied to an AWS S3 bucket.
 - **Tests**: The suite runs on machines without the Raspberry Pi hardware libraries.
 
 ## Hardware
@@ -145,6 +146,82 @@ Timestamps use SQLite's `CURRENT_TIMESTAMP`, which is UTC. The daily view groups
 
 The result is posted to Discord as an embed titled "Automated Plant Health Assessment".
 
+## AWS S3 backup
+
+When `AWS_S3_BUCKET` is set in `.env`, `--photo` uploads each capture to `s3://<bucket>/photos/` and `--animation` uploads each GIF to `s3://<bucket>/animations/`. If an upload fails, the error is logged and the Discord report still goes out. If the variable is not set, nothing is uploaded.
+
+### One-time setup
+
+1. **Create an AWS account** at <https://aws.amazon.com>. Then, signed in as the root user:
+   - Turn on MFA for the root user (account menu → **Security credentials**).
+   - Create a budget alert (**Billing and Cost Management → Budgets → Create budget → Zero spend budget** or a monthly budget of about $5).
+
+   After this, use the root user only for account settings.
+
+2. **Create the bucket.** In the S3 console, choose **Create bucket**:
+   - Name: must be unique across all of AWS, e.g. `plant-timelapse-<yourname>`.
+   - Region: one near you, e.g. `eu-west-1`.
+   - Leave **Block all public access** turned on.
+
+3. **Create an IAM user for the Pi.** In the IAM console, go to **Users → Create user**, name it `plant-pi`, and leave console access off. Skip the permissions step. Open the new user, then **Add permissions → Create inline policy → JSON**, and paste this with your bucket name:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": "s3:PutObject",
+         "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME/*"
+       },
+       {
+         "Effect": "Allow",
+         "Action": "s3:ListBucket",
+         "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME"
+       }
+     ]
+   }
+   ```
+
+   This is least privilege: the Pi can add files to this one bucket and list them. It cannot read, delete or touch anything else in your account. Name the policy `plant-pi-s3-upload`.
+
+4. **Create an access key.** On the user's **Security credentials** tab, choose **Create access key → Application running outside AWS**. Copy both values; the secret is shown only once.
+
+5. **Configure the Pi.** Install the AWS CLI and store the key:
+
+   ```bash
+   sudo apt install awscli
+   aws configure
+   # AWS Access Key ID:     <from step 4>
+   # AWS Secret Access Key: <from step 4>
+   # Default region name:   <your bucket's region>
+   # Default output format: json
+   ```
+
+   This writes `~/.aws/credentials` and `~/.aws/config`. boto3 reads these automatically, so the keys never go in `.env` or in the repo.
+
+6. **Point the app at the bucket.** Add this to `.env`:
+
+   ```dotenv
+   AWS_S3_BUCKET="plant-timelapse-yourname"
+   ```
+
+### Check it works
+
+```bash
+aws sts get-caller-identity              # shows the plant-pi user, so the credentials work
+python -m src.main --photo               # log should end with "Backed up ... to s3://..."
+aws s3 ls s3://plant-timelapse-yourname/photos/
+```
+
+`aws s3 rm` fails with `AccessDenied`, which is expected, because the policy doesn't allow deletes.
+
+To copy photos taken before S3 was set up:
+
+```bash
+aws s3 sync data/photos/ s3://plant-timelapse-yourname/photos/
+```
+
 ## Tests
 
 From the project root:
@@ -159,6 +236,7 @@ The tests cover:
 - **Sensor**: VPD maths, reads and cleanup, and importing without the hardware libraries.
 - **Parsing**: extracting JSON from Gemini and Discord responses.
 - **Animation**: photo collection and ordering, GIF output, and skipping unreadable images.
+- **S3 backup**: object key and content type, and failed uploads returning `None` (the S3 client is mocked, so no AWS account is needed).
 
 ## Project layout
 
@@ -183,7 +261,8 @@ plant-timelapse/
     ├── services/
     │   ├── animation.py          # Growth GIF builder
     │   ├── discord_bot.py        # Discord webhook reports
-    │   └── genai.py              # Gemini image and climate analysis
+    │   ├── genai.py              # Gemini image and climate analysis
+    │   └── s3_backup.py          # Optional S3 upload of photos and GIFs
     ├── static/favicon.ico
     ├── templates/index.html      # Dashboard template
     └── tests/                    # Database, sensor, and animation tests

@@ -22,6 +22,7 @@ try:
         send_discord_photo_report,
     )
     from src.services.genai import send_gemini_report
+    from src.services.s3_backup import upload_to_s3
 except ImportError:
     from database.db import DatabaseManager
     from sensors.camera import capture_photo_and_save
@@ -34,6 +35,7 @@ except ImportError:
         send_discord_photo_report,
     )
     from services.genai import send_gemini_report
+    from services.s3_backup import upload_to_s3
 
 # Dynamic resolution for project directory & environment loading
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -47,6 +49,8 @@ DISCORD_ANIMATION_WEBHOOK_URL = (
     os.getenv("DISCORD_ANIMATION_WEBHOOK_URL") or DISCORD_PHOTO_WEBHOOK_URL
 )
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Optional; photos and GIFs are only backed up to S3 when this is set
+AWS_S3_BUCKET = os.getenv("AWS_S3_BUCKET")
 DB_PATH = PROJECT_ROOT / "data" / "plant_monitor.db"
 PHOTOS_DIR = PROJECT_ROOT / "data" / "photos"
 ANIMATIONS_DIR = PROJECT_ROOT / "data" / "animations"
@@ -89,6 +93,8 @@ def process_photo_report(db: DatabaseManager) -> None:
         return
 
     db.insert_photo(photo_path)
+    if AWS_S3_BUCKET:
+        upload_to_s3(photo_path, AWS_S3_BUCKET, "photos")
 
     # Fetch daily metrics summary to pass along with the photo report
     daily_summary = db.get_daily_timelapse_summary()
@@ -135,6 +141,8 @@ def process_growth_animation() -> None:
     animation_path = create_growth_animation(photos, output_path)
     if not animation_path:
         return
+    if AWS_S3_BUCKET:
+        upload_to_s3(animation_path, AWS_S3_BUCKET, "animations")
 
     title = f"Growth so far: {start_date:%b %d} – {end_date:%b %d}"
     send_discord_animation_report(

@@ -19,3 +19,5 @@ python-dotenv>=1.0.0
 # Google Gemini
 google-generativeai
 google-genai
+# AWS (S3 photo backup)
+boto3>=1.34.0
