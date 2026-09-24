@@ -1,25 +1,26 @@
 # Plant Timelapse & Environmental Monitor
 
-A Raspberry Pi plant-monitoring system that reads a DHT11 sensor, captures webcam photos, stores environmental history in SQLite, serves a local dashboard, and publishes reports to Discord. An optional Google Gemini integration analyzes the latest plant photo alongside the daily climate summary.
+A Raspberry Pi plant-monitoring system. It reads a DHT11 temperature/humidity sensor every hour, takes a daily webcam photo, stores everything in SQLite, and serves a local web dashboard. Reports go to Discord: hourly sensor readings, a daily photo with climate averages, a daily Google Gemini plant-health assessment, and a weekly growth GIF.
 
 ## Features
 
-- DHT11 temperature and humidity readings on GPIO 4.
-- Vapor Pressure Deficit (VPD) calculation in kPa.
-- Webcam capture saved as dated images under `data/photos/`.
-- SQLite storage for readings and photos, with a daily averages view.
-- Flask dashboard with the latest reading and photo.
-- JSON history endpoint at `/api/history` for the latest 24 readings.
-- Separate Discord webhook reports for sensor readings, photo summaries, and Gemini assessments.
-- Growth animation (GIF) built from every daily photo and posted to Discord.
-- Optional Gemini 2.5 Flash analysis with structured visual assessment, climate analysis, and recommendations.
-- Retry handling for transient DHT11 read failures and hardware-library-free test execution.
+- **Sensor readings**: DHT11 temperature and humidity on GPIO 4, with retries for the sensor's frequent timing errors.
+- **VPD**: Vapor Pressure Deficit in kPa, calculated from the Tetens equation.
+- **Daily photo**: A webcam capture saved as `data/photos/MM-DD-YYYY.jpg`.
+- **History**: SQLite tables for readings and photos, plus a view of daily averages.
+- **Dashboard**: A Flask page showing the latest photo and reading, and a JSON history API. It runs as a systemd service that starts on boot.
+- **Discord reports**: Each report type can post to its own webhook.
+  - Hourly: temperature, humidity and VPD.
+  - Daily: the photo plus the day's average climate.
+  - Daily: a Gemini 2.5 Flash assessment covering visual health, climate analysis and recommendations.
+  - Weekly: a looping growth GIF built from every daily photo, with each frame labelled by date.
+- **Tests**: The suite runs on machines without the Raspberry Pi hardware libraries.
 
 ## Hardware
 
 - Raspberry Pi running Raspberry Pi OS
 - DHT11 temperature and humidity sensor
-- USB webcam
+- USB webcam (opened as video device 0)
 - Jumper wires
 
 ### DHT11 wiring
@@ -41,103 +42,149 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` with the credentials and webhook URLs you intend to use. Never commit `.env`.
+Then fill in `.env`. Never commit it; it is already in `.gitignore`.
 
-```dotenv
-GEMINI_API_KEY="your-gemini-api-key"
-DISCORD_PHOTO_WEBHOOK_URL="https://discord.com/api/webhooks/..."
-DISCORD_SENSOR_WEBHOOK_URL="https://discord.com/api/webhooks/..."
-DISCORD_GEMINI_WEBHOOK_URL="https://discord.com/api/webhooks/..."
-# Optional; falls back to DISCORD_PHOTO_WEBHOOK_URL
-DISCORD_ANIMATION_WEBHOOK_URL="https://discord.com/api/webhooks/..."
-```
+| Variable | Used by | Notes |
+| --- | --- | --- |
+| `DISCORD_SENSOR_WEBHOOK_URL` | Hourly reading | Required for the default command |
+| `DISCORD_PHOTO_WEBHOOK_URL` | Daily photo | Required for `--photo` |
+| `DISCORD_GEMINI_WEBHOOK_URL` | Gemini assessment | Required for `--ai` |
+| `GEMINI_API_KEY` | Gemini assessment | Required for `--ai` |
+| `DISCORD_ANIMATION_WEBHOOK_URL` | Growth GIF | Optional; falls back to `DISCORD_PHOTO_WEBHOOK_URL` |
 
-The database is created automatically at `data/plant_monitor.db`. The photo directory is created automatically when a capture is made.
+The `data/` directory, the SQLite database (`data/plant_monitor.db`), and the photo and animation folders are created automatically as needed. `data/` is git-ignored.
 
-## Running the application
+## Commands
 
-`src.main` is the command-line entry point. With no flag, it reads the DHT11, stores the reading, and sends the latest sensor report to Discord:
+`src/main.py` is the command-line entry point. Run it from the project root, because the camera and Gemini code use paths relative to it.
 
-```bash
-python -m src.main
-```
+| Command | What it does |
+| --- | --- |
+| `python -m src.main` | Reads the DHT11, stores the reading, and posts it to the sensor webhook |
+| `python -m src.main --photo` | Captures a webcam photo and posts it with today's climate averages |
+| `python -m src.main --ai` | Sends the latest photo and today's averages to Gemini and posts the structured assessment |
+| `python -m src.main --animation` | Builds a GIF from every daily photo (at least 2 are needed), saves it to `data/animations/`, and posts it |
 
-Capture a webcam image and send a daily environmental summary to Discord:
-
-```bash
-python -m src.main --photo
-```
-
-Send the daily summary and latest image to Gemini, then publish the structured assessment to Discord:
+The hardware modules can also be run on their own for a quick check:
 
 ```bash
-python -m src.main --ai
+python src/sensors/dht11.py    # prints a single reading as a table
+python src/sensors/camera.py   # captures and saves one photo
 ```
 
-Build a looping GIF from every daily photo so far and post it to Discord (intended to run at the end of each week):
+## Scheduling with cron
 
-```bash
-python -m src.main --animation
-```
-
-Each frame is labelled with its date, and the GIF is saved under `data/animations/`. It posts to `DISCORD_ANIMATION_WEBHOOK_URL` if set, otherwise to `DISCORD_PHOTO_WEBHOOK_URL`. Example cron entry for Saturday nights, after the daily photo:
+The reports are run by the user's crontab (`crontab -e`). The current schedule:
 
 ```cron
-15 22 * * 6 cd /home/hannah/plant-timelapse && venv/bin/python src/main.py --animation >> /home/hannah/plant-timelapse.log 2>&1
+# Hourly sensor reading
+00 * * * * cd /home/hannah/plant-timelapse && /home/hannah/plant-timelapse/venv/bin/python src/main.py >> /home/hannah/plant-timelapse.log 2>&1
+# Daily photo at 22:05
+05 22 * * * cd /home/hannah/plant-timelapse && /home/hannah/plant-timelapse/venv/bin/python src/main.py --photo >> /home/hannah/plant-timelapse.log 2>&1
+# Daily Gemini assessment at 22:10, after the photo
+10 22 * * * cd /home/hannah/plant-timelapse && /home/hannah/plant-timelapse/venv/bin/python src/main.py --ai >> /home/hannah/plant-timelapse.log 2>&1
+# Weekly growth GIF, Saturdays at 22:15
+15 22 * * 6 cd /home/hannah/plant-timelapse && /home/hannah/plant-timelapse/venv/bin/python src/main.py --animation >> /home/hannah/plant-timelapse.log 2>&1
 ```
 
-Run the local Flask dashboard on port 5000:
+All output is appended to `~/plant-timelapse.log`.
+
+## Dashboard
+
+The Flask dashboard runs on port 5000. Open `http://<raspberry-pi-ip>:5000/` to see the latest photo, temperature (°F), humidity and VPD.
+
+| Route | Returns |
+| --- | --- |
+| `GET /` | Dashboard page |
+| `GET /api/history` | The latest 24 readings as JSON |
+| `GET /photos/<filename>` | A captured image from `data/photos/` |
+
+To run it by hand for development:
 
 ```bash
 python -m src.app
 ```
 
-Open `http://<raspberry-pi-ip>:5000/` in a browser. The dashboard also exposes:
+### Start the dashboard on boot
 
-- `GET /api/history` - latest 24 sensor readings as JSON
-- `GET /photos/<filename>` - serves a captured image from `data/photos/`
+A systemd unit is included at `deploy/plant-dashboard.service`. It runs the dashboard as `hannah` from the project root, starts once the network is up, and restarts it 5 seconds after a crash. To install it:
 
-The commands are suitable for scheduling with cron or another process supervisor.
+```bash
+sudo cp deploy/plant-dashboard.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now plant-dashboard.service
+```
+
+Useful commands:
+
+```bash
+systemctl status plant-dashboard        # is it running?
+journalctl -u plant-dashboard -f        # follow its logs
+sudo systemctl restart plant-dashboard  # pick up code changes
+```
+
+After you edit the unit file, copy it again, run `daemon-reload`, and restart the service.
 
 ## Database
 
-`DatabaseManager` initializes three SQLite objects:
+`DatabaseManager` (`src/database/db.py`) creates three SQLite objects:
 
-- `readings`: timestamped Celsius/Fahrenheit temperature, humidity, and VPD values.
-- `photos`: captured image paths and timestamps.
-- `daily_timelapse_summary`: a view that combines daily climate averages with the matching photo path.
+- `readings`: timestamp, temperature in °C and °F, humidity, and VPD in kPa.
+- `photos`: timestamp and file path of each captured image.
+- `daily_timelapse_summary`: a view with each day's average temperature, humidity and VPD, joined to that day's photo path.
 
-The database path and photo path are relative to the project root when the normal module commands are used.
+Timestamps use SQLite's `CURRENT_TIMESTAMP`, which is UTC. The daily view groups readings by UTC date.
+
+## Gemini assessment
+
+`--ai` sends Gemini 2.5 Flash three things: a botanist-style prompt, the most recently modified image in `data/photos/`, and the latest row of `daily_timelapse_summary`. The response is requested as JSON that matches this schema:
+
+- `visual_assessment`: `overall_health`, `leaf_posture`, `signs_of_stress`
+- `climate_analysis`: `temperature`, `vpd`
+- `recommendations`: a list of 2 or 3 short actions
+
+The result is posted to Discord as an embed titled "Automated Plant Health Assessment".
 
 ## Tests
 
-Run the test suite from the project root:
+From the project root:
 
 ```bash
 pytest
 ```
 
-The sensor tests cover VPD calculation and behavior when Raspberry Pi hardware libraries are unavailable. Database tests cover initialization and stored readings.
+The tests cover:
+
+- **Database**: initialization, inserting and reading back readings, and photo path normalization for the file server.
+- **Sensor**: VPD maths, reads and cleanup, and importing without the hardware libraries.
+- **Parsing**: extracting JSON from Gemini and Discord responses.
+- **Animation**: photo collection and ordering, GIF output, and skipping unreadable images.
 
 ## Project layout
 
 ```text
 plant-timelapse/
-├── .env.example          # Template for environment configuration
-├── .gitignore            # Ignores .env, __pycache__, and venv
-├── README.md             # Project setup and usage documentation
-├── requirements.txt      # Python dependencies
+├── .env.example                  # Template for environment configuration
+├── README.md
+├── requirements.txt              # Python dependencies
+├── deploy/
+│   └── plant-dashboard.service   # systemd unit that starts the dashboard on boot
+├── data/                         # Created at runtime (git-ignored)
+│   ├── plant_monitor.db          # SQLite database
+│   ├── photos/                   # Daily captures, MM-DD-YYYY.jpg
+│   └── animations/               # Generated growth GIFs
 └── src/
-    ├── app.py                 # Flask dashboard and API routes
-    ├── main.py                # Sensor, photo, and AI CLI workflows
-    ├── database/db.py         # SQLite tables, view, and queries
+    ├── app.py                    # Flask dashboard and API routes
+    ├── main.py                   # CLI: sensor, photo, AI, and animation workflows
+    ├── database/db.py            # SQLite tables, view, and queries
     ├── sensors/
-    │   ├── camera.py          # Webcam capture
-    │   └── dht11.py           # DHT11 reads and VPD calculation
+    │   ├── camera.py             # Webcam capture
+    │   └── dht11.py              # DHT11 reads and VPD calculation
     ├── services/
-    │   ├── animation.py       # Growth GIF builder
-    │   ├── discord_bot.py     # Discord webhook reports
-    │   └── genai.py           # Gemini image and climate analysis
-    ├── templates/index.html   # Dashboard template
-    └── tests/                 # Database and sensor tests
+    │   ├── animation.py          # Growth GIF builder
+    │   ├── discord_bot.py        # Discord webhook reports
+    │   └── genai.py              # Gemini image and climate analysis
+    ├── static/favicon.ico
+    ├── templates/index.html      # Dashboard template
+    └── tests/                    # Database, sensor, and animation tests
 ```

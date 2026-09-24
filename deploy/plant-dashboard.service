@@ -1,0 +1,16 @@
+[Unit]
+Description=Plant Timelapse Flask dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hannah
+WorkingDirectory=/home/hannah/plant-timelapse
+ExecStart=/home/hannah/plant-timelapse/venv/bin/python -m src.app
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
