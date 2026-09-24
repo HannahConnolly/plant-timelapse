@@ -14,8 +14,10 @@ try:
     from src.database.db import DatabaseManager
     from src.sensors.camera import capture_photo_and_save
     from src.sensors.dht11 import DHT11Sensor
+    from src.services.animation import collect_photos, create_growth_animation
     from src.services.discord_bot import (
         post_gemini_report_to_discord,
+        send_discord_animation_report,
         send_discord_hourly_report,
         send_discord_photo_report,
     )
@@ -24,8 +26,10 @@ except ImportError:
     from database.db import DatabaseManager
     from sensors.camera import capture_photo_and_save
     from sensors.dht11 import DHT11Sensor
+    from services.animation import collect_photos, create_growth_animation
     from services.discord_bot import (
         post_gemini_report_to_discord,
+        send_discord_animation_report,
         send_discord_hourly_report,
         send_discord_photo_report,
     )
@@ -39,8 +43,13 @@ load_dotenv(PROJECT_ROOT / ".env")
 DISCORD_PHOTO_WEBHOOK_URL = os.getenv("DISCORD_PHOTO_WEBHOOK_URL")
 DISCORD_SENSOR_WEBHOOK_URL = os.getenv("DISCORD_SENSOR_WEBHOOK_URL")
 DISCORD_GEMINI_WEBHOOK_URL = os.getenv("DISCORD_GEMINI_WEBHOOK_URL")
+DISCORD_ANIMATION_WEBHOOK_URL = (
+    os.getenv("DISCORD_ANIMATION_WEBHOOK_URL") or DISCORD_PHOTO_WEBHOOK_URL
+)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DB_PATH = PROJECT_ROOT / "data" / "plant_monitor.db"
+PHOTOS_DIR = PROJECT_ROOT / "data" / "photos"
+ANIMATIONS_DIR = PROJECT_ROOT / "data" / "animations"
 
 
 def process_sensor_reading(db: DatabaseManager) -> None:
@@ -108,6 +117,29 @@ def gemini_report(db: DatabaseManager):
     return response
 
 
+def process_growth_animation() -> None:
+    """Builds a GIF from every daily photo so far and posts it to Discord."""
+    if not DISCORD_ANIMATION_WEBHOOK_URL:
+        logging.error("DISCORD_ANIMATION_WEBHOOK_URL (or DISCORD_PHOTO_WEBHOOK_URL) is not set.")
+        return
+
+    photos = collect_photos(PHOTOS_DIR)
+    if len(photos) < 2:
+        logging.error(f"Need at least 2 photos to animate; found {len(photos)}.")
+        return
+
+    start_date, end_date = photos[0][0], photos[-1][0]
+    output_path = ANIMATIONS_DIR / f"growth_{start_date.isoformat()}_to_{end_date.isoformat()}.gif"
+    animation_path = create_growth_animation(photos, output_path)
+    if not animation_path:
+        return
+
+    title = f"Growth so far: {start_date:%b %d} – {end_date:%b %d}"
+    send_discord_animation_report(
+        DISCORD_ANIMATION_WEBHOOK_URL, animation_path, title, frame_count=len(photos)
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Plant Monitoring CLI Execution")
     parser.add_argument(
@@ -120,12 +152,19 @@ def main() -> None:
         action="store_true",
         help="Send aggregated reading data and photo to Google Gemini API",
     )
+    parser.add_argument(
+        "--animation",
+        action="store_true",
+        help="Build a growth animation from all daily photos and send it to Discord",
+    )
     args = parser.parse_args()
 
     db = DatabaseManager(str(DB_PATH))
 
     if args.photo:
         process_photo_report(db)
+    elif args.animation:
+        process_growth_animation()
     elif args.ai:
         response = gemini_report(db)
         if response is not None:

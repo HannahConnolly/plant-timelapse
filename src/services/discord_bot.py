@@ -70,6 +70,46 @@ def send_discord_photo_report(
             files["file"][1].close()
 
 
+def send_discord_animation_report(
+    webhook_url: str, animation_path: str | Path, title: str, frame_count: int
+) -> bool:
+    if not webhook_url:
+        logger.warning("⚠️ Missing Webhook URL")
+        return False
+
+    animation_path = Path(animation_path)
+    if not animation_path.exists():
+        logger.error(f"Animation file not found: {animation_path}")
+        return False
+
+    filename = animation_path.name
+    embed = {
+        "title": f"🌱 {title}",
+        "description": f"{frame_count} daily photos",
+        "color": 3066993,  # Green color code
+        "image": {"url": f"attachment://{filename}"},
+    }
+    payload = {"embeds": [embed]}
+
+    try:
+        with animation_path.open("rb") as f:
+            response = requests.post(
+                webhook_url,
+                data={"payload_json": json.dumps(payload)},
+                files={"file": (filename, f, "image/gif")},
+                timeout=30,
+            )
+
+        if response.ok:
+            logger.info("Successfully posted growth animation to Discord")
+            return True
+        logger.error(f"Discord error: {response.status_code} - {response.text}")
+        return False
+    except requests.RequestException as e:
+        logger.error(f"Failed to reach Discord webhook: {e}")
+        return False
+
+
 def send_discord_hourly_report(
     webhook_url: str, hourly_summary: dict[str, Any]
 ) -> None:

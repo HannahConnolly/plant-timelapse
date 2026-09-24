@@ -11,6 +11,7 @@ A Raspberry Pi plant-monitoring system that reads a DHT11 sensor, captures webca
 - Flask dashboard with the latest reading and photo.
 - JSON history endpoint at `/api/history` for the latest 24 readings.
 - Separate Discord webhook reports for sensor readings, photo summaries, and Gemini assessments.
+- Growth animation (GIF) built from every daily photo and posted to Discord.
 - Optional Gemini 2.5 Flash analysis with structured visual assessment, climate analysis, and recommendations.
 - Retry handling for transient DHT11 read failures and hardware-library-free test execution.
 
@@ -47,6 +48,8 @@ GEMINI_API_KEY="your-gemini-api-key"
 DISCORD_PHOTO_WEBHOOK_URL="https://discord.com/api/webhooks/..."
 DISCORD_SENSOR_WEBHOOK_URL="https://discord.com/api/webhooks/..."
 DISCORD_GEMINI_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+# Optional; falls back to DISCORD_PHOTO_WEBHOOK_URL
+DISCORD_ANIMATION_WEBHOOK_URL="https://discord.com/api/webhooks/..."
 ```
 
 The database is created automatically at `data/plant_monitor.db`. The photo directory is created automatically when a capture is made.
@@ -69,6 +72,18 @@ Send the daily summary and latest image to Gemini, then publish the structured a
 
 ```bash
 python -m src.main --ai
+```
+
+Build a looping GIF from every daily photo so far and post it to Discord (intended to run at the end of each week):
+
+```bash
+python -m src.main --animation
+```
+
+Each frame is labelled with its date, and the GIF is saved under `data/animations/`. It posts to `DISCORD_ANIMATION_WEBHOOK_URL` if set, otherwise to `DISCORD_PHOTO_WEBHOOK_URL`. Example cron entry for Saturday nights, after the daily photo:
+
+```cron
+15 22 * * 6 cd /home/hannah/plant-timelapse && venv/bin/python src/main.py --animation >> /home/hannah/plant-timelapse.log 2>&1
 ```
 
 Run the local Flask dashboard on port 5000:
@@ -120,6 +135,7 @@ plant-timelapse/
     │   ├── camera.py          # Webcam capture
     │   └── dht11.py           # DHT11 reads and VPD calculation
     ├── services/
+    │   ├── animation.py       # Growth GIF builder
     │   ├── discord_bot.py     # Discord webhook reports
     │   └── genai.py           # Gemini image and climate analysis
     ├── templates/index.html   # Dashboard template
