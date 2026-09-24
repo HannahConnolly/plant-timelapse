@@ -22,6 +22,7 @@ try:
         send_discord_photo_report,
     )
     from src.services.genai import send_gemini_report
+    from src.services.iot_publisher import publish_reading
     from src.services.s3_backup import upload_to_s3
 except ImportError:
     from database.db import DatabaseManager
@@ -35,6 +36,7 @@ except ImportError:
         send_discord_photo_report,
     )
     from services.genai import send_gemini_report
+    from services.iot_publisher import publish_reading
     from services.s3_backup import upload_to_s3
 
 # Dynamic resolution for project directory & environment loading
@@ -51,6 +53,10 @@ DISCORD_ANIMATION_WEBHOOK_URL = (
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Optional; photos and GIFs are only backed up to S3 when this is set
 AWS_S3_BUCKET = os.getenv("AWS_S3_BUCKET")
+# Optional; hourly readings are only published to AWS IoT Core when the endpoint is set
+AWS_IOT_ENDPOINT = os.getenv("AWS_IOT_ENDPOINT")
+AWS_IOT_THING_NAME = os.getenv("AWS_IOT_THING_NAME", "plant-pi")
+AWS_IOT_CERT_DIR = Path(os.getenv("AWS_IOT_CERT_DIR", "~/.plant-iot")).expanduser()
 DB_PATH = PROJECT_ROOT / "data" / "plant_monitor.db"
 PHOTOS_DIR = PROJECT_ROOT / "data" / "photos"
 ANIMATIONS_DIR = PROJECT_ROOT / "data" / "animations"
@@ -73,6 +79,9 @@ def process_sensor_reading(db: DatabaseManager) -> None:
     if not hourly_report:
         logging.error("No recent sensor data found in database.")
         return
+
+    if AWS_IOT_ENDPOINT:
+        publish_reading(hourly_report[0], AWS_IOT_ENDPOINT, AWS_IOT_CERT_DIR, AWS_IOT_THING_NAME)
 
     if not DISCORD_SENSOR_WEBHOOK_URL:
         logging.error("DISCORD_SENSOR_WEBHOOK_URL is not set.")

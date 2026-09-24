@@ -15,6 +15,7 @@ A Raspberry Pi plant-monitoring system. It reads a DHT11 temperature/humidity se
   - Daily: a Gemini 2.5 Flash assessment covering visual health, climate analysis and recommendations.
   - Weekly: a looping growth GIF built from every daily photo, with each frame labelled by date.
 - **S3 backup** (optional): Each daily photo and weekly GIF is copied to an AWS S3 bucket.
+- **AWS IoT Core** (optional): Each hourly reading is published over MQTT, and an IoT Rule stores it in DynamoDB.
 - **Tests**: The suite runs on machines without the Raspberry Pi hardware libraries.
 
 ## Hardware
@@ -160,8 +161,9 @@ When `AWS_S3_BUCKET` is set in `.env`, `--photo` uploads each capture to `s3://<
 
 2. **Create the bucket.** In the S3 console, choose **Create bucket**:
    - Name: must be unique across all of AWS, e.g. `plant-timelapse-<yourname>`.
-   - Region: one near you, e.g. `eu-west-1`.
-   - Leave **Block all public access** turned on.
+   - Region: one near you, e.g. `us-east-2` (Ohio). Use the same region for everything else, including the IoT Core setup below.
+   - Bucket namespace: **Global namespace**, so the bucket keeps exactly the name you typed.
+   - Leave the other defaults: **ACLs disabled**, **Block all public access** on, versioning off, and SSE-S3 encryption.
 
 3. **Create an IAM user for the Pi.** In the IAM console, go to **Users → Create user**, name it `plant-pi`, and leave console access off. Skip the permissions step. Open the new user, then **Add permissions → Create inline policy → JSON**, and paste this with your bucket name:
 
@@ -214,13 +216,130 @@ python -m src.main --photo               # log should end with "Backed up ... to
 aws s3 ls s3://plant-timelapse-yourname/photos/
 ```
 
-`aws s3 rm` fails with `AccessDenied`, which is expected, because the policy doesn't allow deletes.
+`aws s3 rm` fails with `AccessDenied`, which is expected, because the policy doesn't allow deletes. To remove a file, delete it in the S3 console while signed in as yourself.
 
 To copy photos taken before S3 was set up:
 
 ```bash
 aws s3 sync data/photos/ s3://plant-timelapse-yourname/photos/
 ```
+
+## AWS IoT Core readings
+
+When `AWS_IOT_ENDPOINT` is set in `.env`, every hourly reading is also published to AWS IoT Core. If publishing fails, the error is logged and the Discord report still goes out.
+
+```text
+Pi (hourly cron) --MQTT over TLS, port 8883--> IoT Core topic plant/plant-pi/readings
+                                                   |
+                                   IoT Rule: SELECT * FROM 'plant/+/readings'
+                                                   |
+                                          DynamoDB table plant-readings
+```
+
+The Pi signs in with an X.509 device certificate instead of access keys. Each message looks like this:
+
+```json
+{"device_id": "plant-pi", "timestamp": "2026-09-24T17:00:06Z", "temperature_c": 25.3,
+ "temperature_f": 77.5, "humidity": 73.0, "vpd_kpa": 0.87}
+```
+
+### One-time setup
+
+Do these steps in your bucket's region (`us-east-2` here). Replace `ACCOUNT_ID` with your 12-digit account number, shown in the account menu at the top right.
+
+1. **Create the DynamoDB table.** Search the console for **DynamoDB**. It is its own service, not the **Table buckets** page inside S3. Choose **Tables → Create table**:
+   - Table name: `plant-readings`
+   - Partition key: `device_id` (String)
+   - Sort key: `timestamp` (String)
+   - Under **Table settings**, choose **Customize settings** and then **On-demand** capacity. At 24 writes a day, the cost is effectively zero.
+
+2. **Create the IoT policy.** In IoT Core, go to **Security → Policies → Create policy**, name it `plant-pi-policy`, switch to **JSON**, and paste:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": "iot:Connect",
+         "Resource": "arn:aws:iot:us-east-2:ACCOUNT_ID:client/plant-pi"
+       },
+       {
+         "Effect": "Allow",
+         "Action": "iot:Publish",
+         "Resource": "arn:aws:iot:us-east-2:ACCOUNT_ID:topic/plant/plant-pi/readings"
+       }
+     ]
+   }
+   ```
+
+   The Pi may connect only as client `plant-pi` and publish only to its own readings topic.
+
+3. **Register the Pi as a Thing.** Go to **Manage → All devices → Things → Create things → Create single thing**:
+   - Thing name: `plant-pi`. Choose **No shadow**.
+   - Device certificate: **Auto-generate a new certificate**.
+   - Policies: tick `plant-pi-policy`, then **Create thing**.
+   - Download the **device certificate**, the **private key** and **Amazon Root CA 1**. You can skip the public key and Amazon Root CA 3. The private key is shown only once, so download everything before you click **Done**.
+
+4. **Put the certificates on the Pi.** Create a private folder for them on the Pi:
+
+   ```bash
+   mkdir -p ~/.plant-iot && chmod 700 ~/.plant-iot
+   ```
+
+   If you downloaded the files on another computer, copy them over from that computer:
+
+   ```bash
+   cd ~/Downloads
+   scp *-certificate.pem.crt *-private.pem.key AmazonRootCA1.pem <user>@<pi-ip>:~/.plant-iot/
+   ```
+
+   Then delete them from that computer's Downloads folder, so the private key only exists on the Pi. If you downloaded them on the Pi itself, move them in instead:
+
+   ```bash
+   mv ~/Downloads/*-certificate.pem.crt ~/Downloads/*-private.pem.key ~/Downloads/AmazonRootCA1.pem ~/.plant-iot/
+   ```
+
+   On the Pi, give the files the names the app expects and make them readable only by you:
+
+   ```bash
+   cd ~/.plant-iot
+   mv *-certificate.pem.crt certificate.pem.crt
+   mv *-private.pem.key private.pem.key
+   chmod 600 *
+   ```
+
+   The certificates are kept outside the project folder so they can never be committed.
+
+5. **Create the IoT Rule.** Go to **Message routing → Rules → Create rule**:
+   - Rule name: `plant_readings_to_dynamodb`. Rule names can't contain hyphens.
+   - SQL statement: `SELECT * FROM 'plant/+/readings'`
+   - Action: **DynamoDBv2**, table `plant-readings`. Plain **DynamoDB** would store the whole message in a single column; DynamoDBv2 gives each JSON field its own column.
+   - IAM role: **Create new role**, named `plant-iot-dynamodb-role`.
+
+   The role is what lets IoT Core write to DynamoDB for you. The Pi's certificate has no DynamoDB permissions at all.
+
+6. **Point the app at IoT Core.** Find your account's endpoint in either of these places:
+   - IoT Core → **Connect → Domain configurations**: the domain name of the `iot:Data-ATS` row. Older consoles show it as **Settings → Device data endpoint**.
+   - **CloudShell** (the `>_` icon in the console): `aws iot describe-endpoint --endpoint-type iot:Data-ATS --region us-east-2`. The Pi's `plant-pi` user isn't allowed to run this command.
+
+   The endpoint isn't a secret; the certificate is what grants access. Add it to `.env`:
+
+   ```dotenv
+   AWS_IOT_ENDPOINT="xxxxxxxxxxxxxx-ats.iot.us-east-2.amazonaws.com"
+   ```
+
+   `AWS_IOT_THING_NAME` defaults to `plant-pi` and `AWS_IOT_CERT_DIR` defaults to `~/.plant-iot`.
+
+### Check it works
+
+1. In IoT Core, open **MQTT test client** and subscribe to `plant/#`.
+2. On the Pi, run `python -m src.main`. The log should include `Published reading to AWS IoT topic 'plant/plant-pi/readings'`, and the message appears in the test client.
+3. In DynamoDB, open **Explore items → plant-readings** and click **Run** to see the stored row.
+
+To read a single day instead of the whole table, switch from **Scan** to **Query**: set `device_id` = `plant-pi` and `timestamp` **begins with** `2026-09-24`. A Scan reads every row, while a Query uses the keys and only reads the rows you ask for, so it stays fast and cheap as the table grows.
+
+If the connection fails, check that the endpoint is the `-ats` one, that the three files in `~/.plant-iot` have the right names, and that the certificate is **Active** and has `plant-pi-policy` attached.
 
 ## Tests
 
@@ -236,6 +355,7 @@ The tests cover:
 - **Sensor**: VPD maths, reads and cleanup, and importing without the hardware libraries.
 - **Parsing**: extracting JSON from Gemini and Discord responses.
 - **Animation**: photo collection and ordering, GIF output, and skipping unreadable images.
+- **IoT publishing**: message shape, ISO timestamp, topic and QoS, and failed connections returning `False` (the MQTT connection is mocked).
 - **S3 backup**: object key and content type, and failed uploads returning `None` (the S3 client is mocked, so no AWS account is needed).
 
 ## Project layout
@@ -262,6 +382,7 @@ plant-timelapse/
     │   ├── animation.py          # Growth GIF builder
     │   ├── discord_bot.py        # Discord webhook reports
     │   ├── genai.py              # Gemini image and climate analysis
+    │   ├── iot_publisher.py      # Optional MQTT publish of readings to AWS IoT Core
     │   └── s3_backup.py          # Optional S3 upload of photos and GIFs
     ├── static/favicon.ico
     ├── templates/index.html      # Dashboard template
