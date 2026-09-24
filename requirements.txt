@@ -22,3 +22,6 @@ google-genai
 # AWS (S3 photo backup, IoT Core readings)
 boto3>=1.34.0
 awsiotsdk>=1.22.0
+
+# Testing
+pytest>=8.0

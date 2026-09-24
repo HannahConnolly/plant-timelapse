@@ -11,6 +11,9 @@ from src.services.genai import _extract_gemini_text
 
 class TestDHT11Sensor(unittest.TestCase):
 
+    # Simulate a machine without the Pi hardware libraries, even when running on the Pi
+    @patch("src.sensors.dht11.adafruit_dht", None)
+    @patch("src.sensors.dht11.board", None)
     def test_module_imports_without_hardware_dependencies(self):
         sensor = DHT11Sensor()
         self.assertIsNone(sensor.read())
