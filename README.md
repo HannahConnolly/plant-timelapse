@@ -16,6 +16,7 @@ A Raspberry Pi plant-monitoring system. It reads a DHT11 temperature/humidity se
   - Weekly: a looping growth GIF built from every daily photo, with each frame labelled by date.
 - **S3 backup** (optional): Each daily photo and weekly GIF is copied to an AWS S3 bucket.
 - **AWS IoT Core** (optional): Each hourly reading is published over MQTT, and an IoT Rule stores it in DynamoDB.
+- **AWS Lambda** (optional): When a daily photo lands in S3, a Lambda function asks Gemini for a health report and posts it to Discord.
 - **Tests**: The suite runs on machines without the Raspberry Pi hardware libraries.
 
 ## Hardware
@@ -83,13 +84,17 @@ The reports are run by the user's crontab (`crontab -e`). The current schedule:
 00 * * * * cd /home/hannah/plant-timelapse && /home/hannah/plant-timelapse/venv/bin/python src/main.py >> /home/hannah/plant-timelapse.log 2>&1
 # Daily photo at 22:05
 05 22 * * * cd /home/hannah/plant-timelapse && /home/hannah/plant-timelapse/venv/bin/python src/main.py --photo >> /home/hannah/plant-timelapse.log 2>&1
-# Daily Gemini assessment at 22:10, after the photo
-10 22 * * * cd /home/hannah/plant-timelapse && /home/hannah/plant-timelapse/venv/bin/python src/main.py --ai >> /home/hannah/plant-timelapse.log 2>&1
 # Weekly growth GIF, Saturdays at 22:15
 15 22 * * 6 cd /home/hannah/plant-timelapse && /home/hannah/plant-timelapse/venv/bin/python src/main.py --animation >> /home/hannah/plant-timelapse.log 2>&1
 ```
 
 All output is appended to `~/plant-timelapse.log`.
+
+The nightly Gemini assessment is no longer a cron job. The AWS Lambda function runs it when the 22:05 photo reaches S3 (see [AWS Lambda Gemini report](#aws-lambda-gemini-report)). If you don't use the Lambda, add `--ai` back at 22:10:
+
+```bash
+10 22 * * * cd /home/hannah/plant-timelapse && /home/hannah/plant-timelapse/venv/bin/python src/main.py --ai >> /home/hannah/plant-timelapse.log 2>&1
+```
 
 ## Dashboard
 
@@ -341,6 +346,89 @@ To read a single day instead of the whole table, switch from **Scan** to **Query
 
 If the connection fails, check that the endpoint is the `-ats` one, that the three files in `~/.plant-iot` have the right names, and that the certificate is **Active** and has `plant-pi-policy` attached.
 
+## AWS Lambda Gemini report
+
+`aws_lambda/gemini_report/lambda_function.py` moves the nightly Gemini assessment off the Pi. When a daily photo is uploaded to S3, S3 invokes the function, which:
+
+```text
+S3 photos/MM-DD-YYYY.jpg ──ObjectCreated──▶ Lambda plant-gemini-report
+                                              ├─ S3: downloads the photo
+                                              ├─ DynamoDB: queries the last 24 hours of readings
+                                              ├─ Parameter Store: reads the Gemini key and Discord webhook
+                                              ├─ Gemini 2.5 Flash: gets the structured assessment
+                                              └─ Discord: posts the embed with the photo attached
+```
+
+Notes on how it behaves:
+- **Single file:** it uses only the standard library and boto3, which the Lambda Python runtime includes. There's nothing to package, so you paste the file into the console.
+- **Rolling 24 hours:** it averages the last 24 hours of readings, instead of the UTC calendar day used by `--ai`.
+- **Skips old and undated photos:** files like `demo.jpg`, or photos more than a day old, are ignored. This way `aws s3 sync` doesn't trigger a report for every old photo.
+- **Retries:** if Gemini is overloaded (429 or 5xx), it retries twice, after 5 and 15 seconds. If it still fails, the invocation fails, and S3 retries it later.
+
+The prompt and response schema mirror `src/services/genai.py`. Keep them in sync.
+
+### One-time setup
+
+Use the same region as the bucket. Replace `ACCOUNT_ID` with your 12-digit account number.
+
+1. **Store the secrets in Parameter Store.** Go to **Systems Manager → Parameter Store → Create parameter** and create two parameters, each with **Tier:** Standard, **Type:** SecureString and the default KMS key (`alias/aws/ssm`):
+
+   | Name | Value |
+   | --- | --- |
+   | `/plant-timelapse/gemini-api-key` | your `GEMINI_API_KEY` |
+   | `/plant-timelapse/discord-gemini-webhook` | your `DISCORD_GEMINI_WEBHOOK_URL` |
+
+   Standard parameters are free. Secrets Manager would cost $0.40 per secret per month.
+
+2. **Create the function.** Go to **Lambda → Create function → Author from scratch**:
+   - Name: `plant-gemini-report`
+   - Runtime: **Python 3.12**. Architecture: **arm64**, which is cheaper, and the code has no compiled dependencies.
+   - Execution role: **Create a new role with basic Lambda permissions**. This lets the function write to CloudWatch Logs.
+
+3. **Add the code.** On the **Code** tab, open `lambda_function.py`, replace everything with the contents of `aws_lambda/gemini_report/lambda_function.py`, and click **Deploy**.
+
+4. **Raise the timeout.** Go to **Configuration → General configuration → Edit**. Set **Timeout** to `3 min 0 sec` and **Memory** to `256 MB`. The default 3-second timeout is far too short for a Gemini call.
+
+5. **Grant access to the data.** Go to **Configuration → Permissions** and click the role name to open it in IAM. Choose **Add permissions → Create inline policy → JSON**, paste the policy below, and name it `plant-gemini-report-access`:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": "s3:GetObject",
+         "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME/photos/*"
+       },
+       {
+         "Effect": "Allow",
+         "Action": "dynamodb:Query",
+         "Resource": "arn:aws:dynamodb:us-east-2:ACCOUNT_ID:table/plant-readings"
+       },
+       {
+         "Effect": "Allow",
+         "Action": "ssm:GetParameter",
+         "Resource": "arn:aws:ssm:us-east-2:ACCOUNT_ID:parameter/plant-timelapse/*"
+       }
+     ]
+   }
+   ```
+
+   Decrypting a SecureString that uses the AWS managed `aws/ssm` key needs no separate KMS permission.
+
+6. **Test it by hand.** On the **Test** tab, create an event from `aws_lambda/gemini_report/test_event.json`. Change the photo key and `eventTime` if needed; the photo must be at most a day older than `eventTime`. Then click **Test**. A report with that photo should appear in Discord. The **Log output** shows the climate summary and the Gemini response. Earlier runs are under **Monitor → View CloudWatch logs**.
+
+7. **Connect the S3 trigger.** Click **Add trigger → S3**:
+   - Bucket: your bucket. Event types: **All object create events**.
+   - Prefix: `photos/`. Suffix: `.jpg`.
+   - Tick the recursive invocation acknowledgement. The function only reads from the bucket and never writes to it, so it can't trigger itself.
+
+8. **Retire the Pi's `--ai` job.** Remove the 22:10 `--ai` line with `crontab -e`, or you'll get two reports each night. `python -m src.main --ai` still works if you want to run it by hand.
+
+### Costs
+
+At one invocation a day, this stays inside the Lambda, CloudWatch Logs and Parameter Store free tiers. Gemini usage is billed by Google, as it was before.
+
 ## Tests
 
 From the project root:
@@ -356,6 +444,7 @@ The tests cover:
 - **Parsing**: extracting JSON from Gemini and Discord responses.
 - **Animation**: photo collection and ordering, GIF output, and skipping unreadable images.
 - **IoT publishing**: message shape, ISO timestamp, topic and QoS, and failed connections returning `False` (the MQTT connection is mocked).
+- **Lambda Gemini report**: skipping undated and backfilled photos, averaging DynamoDB readings, the Gemini request and response, retrying when Gemini is busy, the Discord multipart upload, and the handler (all AWS and HTTP calls are mocked).
 - **S3 backup**: object key and content type, and failed uploads returning `None` (the S3 client is mocked, so no AWS account is needed).
 
 ## Project layout
@@ -365,6 +454,9 @@ plant-timelapse/
 ├── .env.example                  # Template for environment configuration
 ├── README.md
 ├── requirements.txt              # Python dependencies
+├── aws_lambda/gemini_report/
+│   ├── lambda_function.py        # S3-triggered Gemini report, deployed to AWS Lambda
+│   └── test_event.json           # Sample S3 event for the Lambda console's Test tab
 ├── deploy/
 │   └── plant-dashboard.service   # systemd unit that starts the dashboard on boot
 ├── data/                         # Created at runtime (git-ignored)
