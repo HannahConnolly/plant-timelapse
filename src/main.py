@@ -88,6 +88,8 @@ def process_photo_report(db: DatabaseManager) -> None:
         logging.error("Failed to capture photo.")
         return
 
+    db.insert_photo(photo_path)
+
     # Fetch daily metrics summary to pass along with the photo report
     daily_summary = db.get_daily_timelapse_summary()
 
