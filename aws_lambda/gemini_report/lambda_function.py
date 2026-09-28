@@ -1,9 +1,11 @@
 """AWS Lambda: when a daily photo lands in S3, ask Gemini for a plant health report and post it to Discord.
 
+The photo from a week earlier is sent too (when it exists) so Gemini can comment on growth.
+
 Triggered by S3 ObjectCreated events on photos/*.jpg. It uses only the standard library and boto3
 (built into the Lambda Python runtime), so this one file is the whole deployment.
 
-The prompt and response schema mirror src/services/genai.py; keep them in sync.
+The prompt and response schema started as copies of src/services/genai.py; the weekly comparison is Lambda-only.
 """
 
 import base64
@@ -20,6 +22,7 @@ from urllib.parse import unquote_plus
 
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -39,6 +42,8 @@ USER_AGENT = "plant-timelapse-lambda (https://github.com/HannahConnolly/plant-ti
 PHOTO_DATE_FORMAT = "%m-%d-%Y"
 # Older photos are skipped so a bulk `aws s3 sync` doesn't trigger a report per photo
 MAX_PHOTO_AGE_DAYS = 1
+# How far back the comparison photo is taken from
+PROGRESS_INTERVAL_DAYS = 7
 
 PROMPT = """
     You are an expert botanist and automated plant monitoring system.
@@ -53,6 +58,13 @@ PROMPT = """
 
     Return only a JSON object matching the provided response schema. Do not use
     Markdown, code fences, or additional commentary.
+"""
+
+PROGRESS_PROMPT = """
+    A second photo of the same plant, taken one week earlier, is also provided.
+    4. Weekly Progress: Compare today's photo with last week's and describe visible
+       growth or decline (new leaves, size, color, posture) in the progress field.
+       Base the Visual Assessment on today's photo only.
 """
 
 # The REST API expects upper-case OpenAPI type names (the Python SDK converts them for you)
@@ -77,6 +89,8 @@ RESPONSE_SCHEMA = {
             "required": ["temperature", "vpd"],
         },
         "recommendations": {"type": "ARRAY", "items": {"type": "STRING"}},
+        # Optional: only filled in when last week's photo was sent
+        "progress": {"type": "STRING"},
     },
     "required": ["visual_assessment", "climate_analysis", "recommendations"],
 }
@@ -124,6 +138,26 @@ def should_process(key: str, event_time: datetime) -> bool:
     return True
 
 
+def previous_photo_key(key: str) -> str:
+    """Key of the photo taken PROGRESS_INTERVAL_DAYS before this one, in the same folder."""
+    path = PurePosixPath(key)
+    previous_date = photo_date_from_key(key) - timedelta(days=PROGRESS_INTERVAL_DAYS)
+    return str(path.with_stem(previous_date.strftime(PHOTO_DATE_FORMAT)))
+
+
+def fetch_previous_photo(bucket: str, key: str) -> bytes | None:
+    """Returns last week's photo, or None if there isn't one (e.g. a skipped or deleted day)."""
+    previous_key = previous_photo_key(key)
+    try:
+        return _client("s3").get_object(Bucket=bucket, Key=previous_key)["Body"].read()
+    except ClientError as e:
+        # Without s3:ListBucket, S3 reports a missing object as AccessDenied rather than NoSuchKey
+        if e.response["Error"]["Code"] in ("NoSuchKey", "AccessDenied"):
+            logger.info(f"No comparison photo at {previous_key} ({e.response['Error']['Code']})")
+            return None
+        raise
+
+
 def fetch_recent_readings(now: datetime, hours: int = 24) -> list[dict]:
     """Queries DynamoDB for this device's readings since `hours` ago, using the sort key."""
     since = (now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -144,22 +178,32 @@ def summarize_readings(items: list[dict]) -> dict:
     return summary
 
 
-def build_gemini_request(image_bytes: bytes, summary: dict) -> dict:
+def _image_part(image_bytes: bytes) -> dict:
     return {
-        "contents": [
-            {
-                "parts": [
-                    {"text": PROMPT},
-                    {
-                        "inline_data": {
-                            "mime_type": "image/jpeg",
-                            "data": base64.b64encode(image_bytes).decode("ascii"),
-                        }
-                    },
-                    {"text": json.dumps(summary)},
-                ]
-            }
-        ],
+        "inline_data": {
+            "mime_type": "image/jpeg",
+            "data": base64.b64encode(image_bytes).decode("ascii"),
+        }
+    }
+
+
+def build_gemini_request(
+    image_bytes: bytes, summary: dict, previous_image_bytes: bytes | None = None
+) -> dict:
+    if previous_image_bytes is None:
+        parts = [{"text": PROMPT}, _image_part(image_bytes)]
+    else:
+        # Label each photo so Gemini knows which one is current
+        parts = [
+            {"text": PROMPT + PROGRESS_PROMPT},
+            {"text": "Today's photo:"},
+            _image_part(image_bytes),
+            {"text": f"Photo from {PROGRESS_INTERVAL_DAYS} days earlier:"},
+            _image_part(previous_image_bytes),
+        ]
+    parts.append({"text": json.dumps(summary)})
+    return {
+        "contents": [{"parts": parts}],
         "generationConfig": {
             "responseMimeType": "application/json",
             "responseSchema": RESPONSE_SCHEMA,
@@ -172,10 +216,12 @@ def parse_gemini_response(body: dict) -> dict:
     return json.loads(text)
 
 
-def call_gemini(api_key: str, image_bytes: bytes, summary: dict) -> dict:
+def call_gemini(
+    api_key: str, image_bytes: bytes, summary: dict, previous_image_bytes: bytes | None = None
+) -> dict:
     request = urllib.request.Request(
         GEMINI_URL.format(model=GEMINI_MODEL),
-        data=json.dumps(build_gemini_request(image_bytes, summary)).encode(),
+        data=json.dumps(build_gemini_request(image_bytes, summary, previous_image_bytes)).encode(),
         headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
     )
     for attempt, delay in enumerate(GEMINI_RETRY_DELAYS + [None], start=1):
@@ -201,29 +247,35 @@ def build_discord_embed(report: dict, summary: dict, filename: str) -> dict:
     else:
         rec_text = "No immediate adjustments required."
 
+    fields = [
+        {
+            "name": "👁️ Visual Assessment",
+            "value": (
+                f"**Health:** {visual.get('overall_health', 'N/A')}\n\n"
+                f"**Posture:** {visual.get('leaf_posture', 'N/A')}\n\n"
+                f"**Signs of Stress:** {visual.get('signs_of_stress', 'N/A')}"
+            ),
+            "inline": False,
+        },
+        {
+            "name": "🌡️ Climate Analysis",
+            "value": (
+                f"**Temperature:** {climate.get('temperature', 'N/A')}\n\n"
+                f"**VPD:** {climate.get('vpd', 'N/A')}"
+            ),
+            "inline": False,
+        },
+        {"name": "📋 Recommendations", "value": rec_text, "inline": False},
+    ]
+    if report.get("progress"):
+        # Discord rejects embed field values over 1024 characters
+        progress = report["progress"][:1024]
+        fields.append({"name": "📈 Progress Since Last Week", "value": progress, "inline": False})
+
     return {
         "title": "🌿 Automated Plant Health Assessment",
         "color": 3066993,  # Emerald Green
-        "fields": [
-            {
-                "name": "👁️ Visual Assessment",
-                "value": (
-                    f"**Health:** {visual.get('overall_health', 'N/A')}\n\n"
-                    f"**Posture:** {visual.get('leaf_posture', 'N/A')}\n\n"
-                    f"**Signs of Stress:** {visual.get('signs_of_stress', 'N/A')}"
-                ),
-                "inline": False,
-            },
-            {
-                "name": "🌡️ Climate Analysis",
-                "value": (
-                    f"**Temperature:** {climate.get('temperature', 'N/A')}\n\n"
-                    f"**VPD:** {climate.get('vpd', 'N/A')}"
-                ),
-                "inline": False,
-            },
-            {"name": "📋 Recommendations", "value": rec_text, "inline": False},
-        ],
+        "fields": fields,
         "image": {"url": f"attachment://{filename}"},
         "footer": {
             "text": f"Gemini via AWS Lambda • {summary['reading_count']} readings from the last 24h"
@@ -270,10 +322,13 @@ def process_photo(bucket: str, key: str, event_time: datetime) -> str:
         return "skipped"
 
     image_bytes = _client("s3").get_object(Bucket=bucket, Key=key)["Body"].read()
+    previous_image_bytes = fetch_previous_photo(bucket, key)
     summary = summarize_readings(fetch_recent_readings(event_time))
     logger.info(f"Climate summary: {json.dumps(summary)}")
 
-    report = call_gemini(get_parameter("gemini-api-key"), image_bytes, summary)
+    report = call_gemini(
+        get_parameter("gemini-api-key"), image_bytes, summary, previous_image_bytes
+    )
     logger.info(f"Gemini report: {json.dumps(report)}")
 
     filename = PurePosixPath(key).name

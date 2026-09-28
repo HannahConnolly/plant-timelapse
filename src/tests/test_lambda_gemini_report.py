@@ -35,6 +35,24 @@ class TestShouldProcess(unittest.TestCase):
         self.assertFalse(lf.should_process("photos/demo.jpg", EVENT_TIME))
 
 
+class TestPreviousPhoto(unittest.TestCase):
+    def test_previous_key_is_one_week_earlier_across_month_boundary(self):
+        self.assertEqual(lf.previous_photo_key("photos/10-03-2026.jpg"), "photos/09-26-2026.jpg")
+
+    def test_missing_previous_photo_returns_none(self):
+        s3 = MagicMock()
+        s3.get_object.side_effect = lf.ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+        with patch.object(lf, "_client", return_value=s3):
+            self.assertIsNone(lf.fetch_previous_photo("bucket", "photos/09-24-2026.jpg"))
+        s3.get_object.assert_called_once_with(Bucket="bucket", Key="photos/09-17-2026.jpg")
+
+    def test_other_s3_errors_are_raised(self):
+        s3 = MagicMock()
+        s3.get_object.side_effect = lf.ClientError({"Error": {"Code": "SlowDown"}}, "GetObject")
+        with patch.object(lf, "_client", return_value=s3), self.assertRaises(lf.ClientError):
+            lf.fetch_previous_photo("bucket", "photos/09-24-2026.jpg")
+
+
 class TestSummarizeReadings(unittest.TestCase):
     def test_averages_decimals_and_skips_missing_values(self):
         items = [
@@ -64,6 +82,22 @@ class TestGemini(unittest.TestCase):
         self.assertEqual(parts[1]["inline_data"], {"mime_type": "image/jpeg", "data": "anBlZy1ieXRlcw=="})
         self.assertEqual(json.loads(parts[2]["text"]), {"reading_count": 3})
         self.assertEqual(request["generationConfig"]["responseSchema"]["type"], "OBJECT")
+
+    def test_request_with_previous_photo_labels_both_images(self):
+        request = lf.build_gemini_request(b"today", {"reading_count": 3}, b"last-week")
+
+        parts = request["contents"][0]["parts"]
+        self.assertIn("Weekly Progress", parts[0]["text"])
+        self.assertEqual(parts[1]["text"], "Today's photo:")
+        self.assertEqual(parts[2]["inline_data"]["data"], "dG9kYXk=")
+        self.assertIn("7 days earlier", parts[3]["text"])
+        self.assertEqual(parts[4]["inline_data"]["data"], "bGFzdC13ZWVr")
+        self.assertEqual(json.loads(parts[5]["text"]), {"reading_count": 3})
+
+    def test_request_without_previous_photo_omits_progress_prompt(self):
+        request = lf.build_gemini_request(b"today", {})
+
+        self.assertNotIn("Weekly Progress", request["contents"][0]["parts"][0]["text"])
 
     def test_parse_response_reads_json_text(self):
         body = {"candidates": [{"content": {"parts": [{"text": json.dumps(REPORT)}]}}]}
@@ -106,6 +140,16 @@ class TestDiscord(unittest.TestCase):
         self.assertIn("20 readings", payload["embeds"][0]["footer"]["text"])
         self.assertEqual(file_part.get_filename(), "09-24-2026.jpg")
         self.assertEqual(file_part.get_content(), b"jpeg-bytes")
+
+
+    def test_progress_field_only_when_reported(self):
+        without = lf.build_discord_embed(REPORT, {"reading_count": 20}, "09-24-2026.jpg")
+        with_progress = lf.build_discord_embed(
+            {**REPORT, "progress": "Two new leaves"}, {"reading_count": 20}, "09-24-2026.jpg"
+        )
+
+        self.assertEqual(len(without["fields"]), 3)
+        self.assertEqual(with_progress["fields"][3]["value"], "Two new leaves")
 
 
 class TestHandler(unittest.TestCase):
