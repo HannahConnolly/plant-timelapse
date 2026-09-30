@@ -19,6 +19,33 @@ A Raspberry Pi plant-monitoring system. It reads a DHT11 temperature/humidity se
 - **AWS Lambda** (optional): When a daily photo lands in S3, a Lambda function asks Gemini for a health report and posts it to Discord.
 - **Tests**: The suite runs on machines without the Raspberry Pi hardware libraries.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Pi["Raspberry Pi (cron)"]
+        DHT[DHT11 sensor] --> Main[src/main.py]
+        Cam[USB webcam] --> Main
+        Main --> DB[(SQLite)]
+        DB --> Flask[Flask dashboard :5000]
+    end
+
+    subgraph AWS["AWS (us-east-2)"]
+        IoT[IoT Core<br/>MQTT topic] -->|IoT Rule| DDB[(DynamoDB<br/>plant-readings)]
+        S3[(S3 bucket<br/>photos/ and animations/)] -->|photos/*.jpg upload| Lambda[Lambda<br/>plant-gemini-report]
+        SSM[SSM Parameter Store<br/>API key, webhook] --> Lambda
+        DDB -->|last 24h of readings| Lambda
+    end
+
+    Main -->|hourly reading| IoT
+    Main -->|daily photo, weekly GIF| S3
+    Lambda <-->|today's and last week's photos| Gemini[Google Gemini 2.5 Flash]
+    Main -->|hourly reading, daily photo, weekly GIF| Discord[Discord webhooks]
+    Lambda -->|nightly health report| Discord
+```
+
+Each hour the Pi reads the sensor, saves the reading to SQLite, and publishes it to AWS IoT Core. An IoT Rule then writes it to DynamoDB. At 22:05 the Pi takes a photo and uploads it to S3. The upload triggers a Lambda function. The function pulls the day's readings from DynamoDB and the photo from a week earlier, asks Gemini for an assessment, and posts it to Discord. The Pi posts its own reports straight to Discord.
+
 ## Hardware
 
 - Raspberry Pi running Raspberry Pi OS
