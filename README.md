@@ -467,6 +467,7 @@ pytest
 The tests cover:
 
 - **Database**: initialization, inserting and reading back readings, and photo path normalization for the file server.
+- **Dashboard**: the page renders with an empty database, with readings but no photo, and with both.
 - **Sensor**: VPD maths, reads and cleanup, and importing without the hardware libraries.
 - **Parsing**: extracting JSON from Gemini and Discord responses.
 - **Animation**: photo collection and ordering, GIF output, and skipping unreadable images.

@@ -39,7 +39,6 @@ def index():
     current_data = latest[0] if latest else {}
     if current_data.get("file_path"):
         current_data["file_path"] = normalize_photo_path(current_data["file_path"])
-    print(current_data)
     return render_template("index.html", data=current_data)
 
 

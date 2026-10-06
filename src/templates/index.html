@@ -37,13 +37,21 @@
     <div class="grid">
         <div class="card">
             <h2>Current Feed</h2>
+            {% if data.file_path %}
             <img src="{{ url_for('serve_photo', filename=data.file_path) }}" alt="Latest Webcam Feed">
+            {% else %}
+            <p>No photo yet.</p>
+            {% endif %}
         </div>
         <div class="card">
             <h2>Latest Reading</h2>
+            {% if data %}
             <p>Temperature: <strong>{{ data.temperature_f }}°F</strong></p>
             <p>Humidity: <strong>{{ data.humidity }}%</strong></p>
             <p>VPD: <strong>{{ data.vpd_kpa }} kPa</strong></p>
+            {% else %}
+            <p>No readings yet.</p>
+            {% endif %}
         </div>
     </div>
 </body>
