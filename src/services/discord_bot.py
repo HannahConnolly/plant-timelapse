@@ -13,10 +13,11 @@ COLOR_GREEN = 3066993
 COLOR_YELLOW = 15844367
 COLOR_RED = 15158332
 
-# VPD (kPa): green inside the ideal band, yellow in the danger band either
-# side of it, red once outside the safe range entirely.
-VPD_IDEAL = (0.8, 1.2)
-VPD_SAFE = (0.4, 1.6)
+# VPD (kPa), stage-agnostic: ideal spans vegetative (0.8-1.2) through
+# flowering (1.2-1.5). Yellow covers seedling-level humidity (mold risk) and
+# mild heat/dryness stress; red is below 0.4 (mold/rot) or above 1.8 (damage).
+VPD_IDEAL = (0.8, 1.5)
+VPD_SAFE = (0.4, 1.8)
 
 
 def vpd_color(vpd: float | None) -> int:
