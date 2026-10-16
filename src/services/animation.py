@@ -24,12 +24,24 @@ def collect_photos(photos_dir: Path) -> list[tuple[date, Path]]:
     return sorted(photos)
 
 
+def _load_font(size: int) -> ImageFont.ImageFont:
+    """Returns a scalable font; Pillow < 10.1 can't size its built-in default."""
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        pass
+    try:
+        return ImageFont.truetype("DejaVuSans.ttf", size)
+    except OSError:
+        return ImageFont.load_default()
+
+
 def _label_frame(image: Image.Image, text: str) -> Image.Image:
     """Draws a date caption in the bottom-left corner of the frame."""
     frame = image.convert("RGB")
     draw = ImageDraw.Draw(frame)
     font_size = max(16, frame.height // 20)
-    font = ImageFont.load_default(size=font_size)
+    font = _load_font(font_size)
 
     margin = font_size // 2
     left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
