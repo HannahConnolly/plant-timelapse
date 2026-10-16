@@ -9,6 +9,25 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+COLOR_GREEN = 3066993
+COLOR_YELLOW = 15844367
+COLOR_RED = 15158332
+
+# VPD (kPa): green inside the ideal band, yellow in the danger band either
+# side of it, red once outside the safe range entirely.
+VPD_IDEAL = (0.8, 1.2)
+VPD_SAFE = (0.4, 1.6)
+
+
+def vpd_color(vpd: float | None) -> int:
+    if vpd is None:
+        return COLOR_GREEN
+    if not VPD_SAFE[0] <= vpd <= VPD_SAFE[1]:
+        return COLOR_RED
+    if not VPD_IDEAL[0] <= vpd <= VPD_IDEAL[1]:
+        return COLOR_YELLOW
+    return COLOR_GREEN
+
 
 def send_discord_photo_report(
     webhook_url: str, daily_summary: dict[str, Any], photo_path: str | None = None
@@ -29,7 +48,7 @@ def send_discord_photo_report(
 
     # 1. Initialize embed dictionary with fields
     embed = {
-        "color": 3066993,  # Green color code
+        "color": vpd_color(avg_vpd),
         "fields": [
             {"name": "Avg Temp", "value": temp_str, "inline": True},
             {"name": "Avg Humidity", "value": hum_str, "inline": True},
@@ -129,7 +148,7 @@ def send_discord_hourly_report(
 
     # 1. Initialize embed dictionary with fields
     embed = {
-        "color": 3066993,  # Green color code
+        "color": vpd_color(vpd),
         "fields": [
             {"name": "Temp", "value": temp_str, "inline": True},
             {"name": "Humidity", "value": hum_str, "inline": True},
