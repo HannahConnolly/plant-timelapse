@@ -40,3 +40,7 @@ Things that span multiple files:
 - Hardware libs (DHT11/camera) must stay importable without the hardware so tests run on any machine; AWS/HTTP calls are mocked in tests.
 
 Config is via `.env` (see `.env.example`); IoT device certs live outside the repo in `~/.plant-iot`, and AWS credentials come from `~/.aws`, never `.env`.
+
+## Struggle log
+
+Past mistakes and non-obvious failures are recorded in `agents/struggle-log/` (one file per entry; see its README for the format). At the start of every session, before doing other work, list that directory and read every file in it. Entries are added by the user manually; do not create or edit them.
